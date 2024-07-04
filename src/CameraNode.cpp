@@ -99,9 +99,6 @@ private:
   };
   std::unordered_map<const libcamera::FrameBuffer *, buffer_info_t> buffer_info;
 
-  // timestamp offset (ns) from camera time to system time
-  int64_t time_offset = 0;
-
   rclcpp::Publisher<sensor_msgs::msg::Image>::SharedPtr pub_image;
   rclcpp::Publisher<sensor_msgs::msg::CompressedImage>::SharedPtr pub_image_compressed;
   rclcpp::Publisher<sensor_msgs::msg::CameraInfo>::SharedPtr pub_ci;
@@ -600,6 +597,13 @@ CameraNode::process(libcamera::Request *const request)
     request_locks[request]->lock();
 
     if (request->status() == libcamera::Request::RequestComplete) {
+      using steady_time_point_t = std::chrono::steady_clock::time_point;
+      using std::chrono::duration_cast;
+      using std::chrono::nanoseconds;
+
+      steady_time_point_t const request_completion_steady_time = std::chrono::steady_clock::now();
+      rclcpp::Time const request_completion_ros_time = now();
+
       assert(request->buffers().size() == 1);
 
       // get the stream and buffer from the request
@@ -609,13 +613,14 @@ CameraNode::process(libcamera::Request *const request)
       for (const libcamera::FrameMetadata::Plane &plane : metadata.planes())
         bytesused += plane.bytesused;
 
-      // set time offset once for accurate timing using the device time
-      if (time_offset == 0)
-        time_offset = this->now().nanoseconds() - metadata.timestamp;
+      // time offset = ros_time - steady_time
+      auto const time_offset = nanoseconds {request_completion_ros_time.nanoseconds()} -
+        (request_completion_steady_time - steady_time_point_t {});
+      steady_time_point_t const metadata_timestamp {nanoseconds {metadata.timestamp}};
 
       // send image data
       std_msgs::msg::Header hdr;
-      hdr.stamp = rclcpp::Time(time_offset + int64_t(metadata.timestamp));
+      hdr.stamp = rclcpp::Time(duration_cast<nanoseconds>(time_offset + metadata_timestamp - steady_time_point_t {}).count());
       hdr.frame_id = "camera";
       const libcamera::StreamConfiguration &cfg = stream->configuration();
 
