@@ -6,6 +6,7 @@
 #include "pv_to_cv.hpp"
 #include "type_extent.hpp"
 #include "types.hpp"
+
 #include <algorithm>
 #include <camera_info_manager/camera_info_manager.hpp>
 #include <cassert>
@@ -20,6 +21,7 @@
 #endif
 #include <atomic>
 #include <iostream>
+
 #include <libcamera/base/shared_fd.h>
 #include <libcamera/base/signal.h>
 #include <libcamera/base/span.h>
@@ -92,10 +94,6 @@ private:
   libcamera::Stream *stream;
   std::shared_ptr<libcamera::FrameBufferAllocator> allocator;
   std::vector<std::unique_ptr<libcamera::Request>> requests;
-  std::vector<std::thread> request_threads;
-  std::unordered_map<const libcamera::Request *, std::mutex> request_mutexes;
-  std::unordered_map<const libcamera::Request *, std::condition_variable> request_condvars;
-  std::atomic<bool> running;
 
   struct buffer_info_t
   {
@@ -431,15 +429,6 @@ CameraNode::CameraNode(const rclcpp::NodeOptions &options) : Node("camera", opti
     requests.push_back(std::move(request));
   }
 
-  // create a processing thread per request
-  running = true;
-  for (const std::unique_ptr<libcamera::Request> &request : requests) {
-    // create mutexes in-place
-    request_mutexes[request.get()];
-    request_condvars[request.get()];
-    request_threads.emplace_back(&CameraNode::process, this, request.get());
-  }
-
   // register callback
   camera->requestCompleted.connect(this, &CameraNode::requestComplete);
 
@@ -457,21 +446,6 @@ CameraNode::CameraNode(const rclcpp::NodeOptions &options) : Node("camera", opti
 
 CameraNode::~CameraNode()
 {
-  // stop request callbacks
-  for (std::unique_ptr<libcamera::Request> &request : requests)
-    camera->requestCompleted.disconnect(request.get());
-
-  // stop request processing threads
-  running = false;
-
-  // unlock all threads
-  for (auto &[req, condvar] : request_condvars)
-    condvar.notify_all();
-
-  // wait for all currently running threads to finish
-  for (std::thread &thread : request_threads)
-    thread.join();
-
   // stop camera
   if (camera->stop())
     std::cerr << "failed to stop camera" << std::endl;
@@ -607,102 +581,83 @@ CameraNode::declareParameters()
 void
 CameraNode::requestComplete(libcamera::Request *const request)
 {
-  std::unique_lock lk(request_mutexes.at(request));
-  request_condvars.at(request).notify_one();
-}
+  if (request->status() == libcamera::Request::RequestComplete) {
+    using steady_time_point_t = std::chrono::steady_clock::time_point;
+    using std::chrono::duration_cast;
+    using std::chrono::nanoseconds;
 
-void
-CameraNode::process(libcamera::Request *const request)
-{
-  while (true) {
-    // block until request is available
-    std::unique_lock lk(request_mutexes.at(request));
-    request_condvars.at(request).wait(lk);
+    steady_time_point_t const request_completion_steady_time = std::chrono::steady_clock::now();
+    rclcpp::Time const request_completion_ros_time = now();
 
-    if (!running)
-      return;
+    assert(request->buffers().size() == 1);
 
-    if (request->status() == libcamera::Request::RequestComplete) {
-      using steady_time_point_t = std::chrono::steady_clock::time_point;
-      using std::chrono::duration_cast;
-      using std::chrono::nanoseconds;
+    // get the stream and buffer from the request
+    const libcamera::FrameBuffer *buffer = request->findBuffer(stream);
+    const libcamera::FrameMetadata &metadata = buffer->metadata();
+    size_t bytesused = 0;
+    for (const libcamera::FrameMetadata::Plane &plane : metadata.planes())
+      bytesused += plane.bytesused;
 
-      steady_time_point_t const request_completion_steady_time = std::chrono::steady_clock::now();
-      rclcpp::Time const request_completion_ros_time = now();
+    // time offset = ros_time - steady_time
+    auto const time_offset = nanoseconds {request_completion_ros_time.nanoseconds()} -
+      (request_completion_steady_time - steady_time_point_t {});
+    steady_time_point_t const metadata_timestamp {nanoseconds {metadata.timestamp}};
 
-      assert(request->buffers().size() == 1);
+    // send image data
+    std_msgs::msg::Header hdr;
+    hdr.stamp = rclcpp::Time(duration_cast<nanoseconds>(time_offset + metadata_timestamp - steady_time_point_t {}).count());
+    hdr.frame_id = "camera";
+    const libcamera::StreamConfiguration &cfg = stream->configuration();
 
-      // get the stream and buffer from the request
-      const libcamera::FrameBuffer *buffer = request->findBuffer(stream);
-      const libcamera::FrameMetadata &metadata = buffer->metadata();
-      size_t bytesused = 0;
-      for (const libcamera::FrameMetadata::Plane &plane : metadata.planes())
-        bytesused += plane.bytesused;
+    auto msg_img = std::make_unique<sensor_msgs::msg::Image>();
+    auto msg_img_compressed = std::make_unique<sensor_msgs::msg::CompressedImage>();
 
-      // time offset = ros_time - steady_time
-      auto const time_offset = nanoseconds {request_completion_ros_time.nanoseconds()} -
-        (request_completion_steady_time - steady_time_point_t {});
-      steady_time_point_t const metadata_timestamp {nanoseconds {metadata.timestamp}};
+    if (format_type(cfg.pixelFormat) == FormatType::RAW) {
+      // raw uncompressed image
+      assert(buffer_info[buffer].size == bytesused);
+      msg_img->header = hdr;
+      msg_img->width = cfg.size.width;
+      msg_img->height = cfg.size.height;
+      msg_img->step = cfg.stride;
+      msg_img->encoding = get_ros_encoding(cfg.pixelFormat);
+      msg_img->is_bigendian = (__BYTE_ORDER__ == __ORDER_BIG_ENDIAN__);
+      msg_img->data.resize(buffer_info[buffer].size);
+      memcpy(msg_img->data.data(), buffer_info[buffer].data, buffer_info[buffer].size);
 
-      // send image data
-      std_msgs::msg::Header hdr;
-      hdr.stamp = rclcpp::Time(duration_cast<nanoseconds>(time_offset + metadata_timestamp - steady_time_point_t {}).count());
-      hdr.frame_id = "camera";
-      const libcamera::StreamConfiguration &cfg = stream->configuration();
-
-      auto msg_img = std::make_unique<sensor_msgs::msg::Image>();
-      auto msg_img_compressed = std::make_unique<sensor_msgs::msg::CompressedImage>();
-
-      if (format_type(cfg.pixelFormat) == FormatType::RAW) {
-        // raw uncompressed image
-        assert(buffer_info[buffer].size == bytesused);
-        msg_img->header = hdr;
-        msg_img->width = cfg.size.width;
-        msg_img->height = cfg.size.height;
-        msg_img->step = cfg.stride;
-        msg_img->encoding = get_ros_encoding(cfg.pixelFormat);
-        msg_img->is_bigendian = (__BYTE_ORDER__ == __ORDER_BIG_ENDIAN__);
-        msg_img->data.resize(buffer_info[buffer].size);
-        memcpy(msg_img->data.data(), buffer_info[buffer].data, buffer_info[buffer].size);
-
-        // compress to jpeg
-        if (pub_image_compressed->get_subscription_count()) {
-          try {
-            compressImageMsg(*msg_img, *msg_img_compressed,
-                             {cv::IMWRITE_JPEG_QUALITY, jpeg_quality});
-          }
-          catch (const cv_bridge::Exception &e) {
-            RCLCPP_ERROR_STREAM(get_logger(), e.what());
-          }
+      // compress to jpeg
+      if (pub_image_compressed->get_subscription_count()) {
+        try {
+          compressImageMsg(*msg_img, *msg_img_compressed,
+                            {cv::IMWRITE_JPEG_QUALITY, jpeg_quality});
+        }
+        catch (const cv_bridge::Exception &e) {
+          RCLCPP_ERROR_STREAM(get_logger(), e.what());
         }
       }
-      else if (format_type(cfg.pixelFormat) == FormatType::COMPRESSED) {
-        // compressed image
-        assert(bytesused < buffer_info[buffer].size);
-        msg_img_compressed->header = hdr;
-        msg_img_compressed->format = get_ros_encoding(cfg.pixelFormat);
-        msg_img_compressed->data.resize(bytesused);
-        memcpy(msg_img_compressed->data.data(), buffer_info[buffer].data, bytesused);
-
-        // decompress into raw rgb8 image
-        if (pub_image->get_subscription_count())
-          cv_bridge::toCvCopy(*msg_img_compressed, "rgb8")->toImageMsg(*msg_img);
-      }
-      else {
-        throw std::runtime_error("unsupported pixel format: " +
-                                 stream->configuration().pixelFormat.toString());
-      }
-
-      pub_image->publish(std::move(msg_img));
-      pub_image_compressed->publish(std::move(msg_img_compressed));
-
-      sensor_msgs::msg::CameraInfo ci = cim.getCameraInfo();
-      ci.header = hdr;
-      pub_ci->publish(ci);
     }
-    else if (request->status() == libcamera::Request::RequestCancelled) {
-      RCLCPP_ERROR_STREAM(get_logger(), "request '" << request->toString() << "' cancelled");
+    else if (format_type(cfg.pixelFormat) == FormatType::COMPRESSED) {
+      // compressed image
+      assert(bytesused < buffer_info[buffer].size);
+      msg_img_compressed->header = hdr;
+      msg_img_compressed->format = get_ros_encoding(cfg.pixelFormat);
+      msg_img_compressed->data.resize(bytesused);
+      memcpy(msg_img_compressed->data.data(), buffer_info[buffer].data, bytesused);
+
+      // decompress into raw rgb8 image
+      if (pub_image->get_subscription_count())
+        cv_bridge::toCvCopy(*msg_img_compressed, "rgb8")->toImageMsg(*msg_img);
     }
+    else {
+      throw std::runtime_error("unsupported pixel format: " +
+                                stream->configuration().pixelFormat.toString());
+    }
+
+    pub_image->publish(std::move(msg_img));
+    pub_image_compressed->publish(std::move(msg_img_compressed));
+
+    sensor_msgs::msg::CameraInfo ci = cim.getCameraInfo();
+    ci.header = hdr;
+    pub_ci->publish(ci);
 
     // queue the request again for the next frame
     request->reuse(libcamera::Request::ReuseBuffers);
@@ -721,6 +676,9 @@ CameraNode::process(libcamera::Request *const request)
     parameters_lock.unlock();
 
     camera->queueRequest(request);
+  }
+  else if (request->status() == libcamera::Request::RequestCancelled) {
+    RCLCPP_INFO_STREAM(get_logger(), "request '" << request->toString() << "' cancelled");
   }
 }
 
