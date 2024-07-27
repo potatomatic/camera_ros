@@ -621,8 +621,8 @@ CameraNode::requestComplete(libcamera::Request *const request)
       msg_img->step = cfg.stride;
       msg_img->encoding = get_ros_encoding(cfg.pixelFormat);
       msg_img->is_bigendian = (__BYTE_ORDER__ == __ORDER_BIG_ENDIAN__);
-      msg_img->data.resize(buffer_info[buffer].size);
-      memcpy(msg_img->data.data(), buffer_info[buffer].data, buffer_info[buffer].size);
+      msg_img->data.assign(reinterpret_cast<std::uint8_t const *>(buffer_info[buffer].data),
+        reinterpret_cast<std::uint8_t const *>(buffer_info[buffer].data) + buffer_info[buffer].size);
 
       // compress to jpeg
       if (pub_image_compressed->get_subscription_count()) {
@@ -640,8 +640,8 @@ CameraNode::requestComplete(libcamera::Request *const request)
       assert(bytesused < buffer_info[buffer].size);
       msg_img_compressed->header = hdr;
       msg_img_compressed->format = get_ros_encoding(cfg.pixelFormat);
-      msg_img_compressed->data.resize(bytesused);
-      memcpy(msg_img_compressed->data.data(), buffer_info[buffer].data, bytesused);
+      msg_img_compressed->data.assign(reinterpret_cast<std::uint8_t const *>(buffer_info[buffer].data),
+        reinterpret_cast<std::uint8_t const *>(buffer_info[buffer].data) + bytesused);
 
       // decompress into raw rgb8 image
       if (pub_image->get_subscription_count())
