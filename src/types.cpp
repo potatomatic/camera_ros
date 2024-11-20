@@ -24,6 +24,9 @@ std::to_string(const libcamera::ControlType id)
     CASE_TYPE(Unsigned32)
     CASE_TYPE(Point)
 #endif
+    // Prevent "enumeration value ‘...’ not handled in switch"
+    default:
+      break;
   }
 
   return {};

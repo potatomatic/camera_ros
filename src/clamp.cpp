@@ -159,6 +159,9 @@ clamp(const libcamera::ControlValue &value, const libcamera::ControlValue &min,
     CASE_CLAMP(Unsigned32)
     CASE_CLAMP(Point)
 #endif
+    // Prevent "enumeration value ‘...’ not handled in switch"
+    default:
+      break;
   }
 
   return {};
@@ -312,6 +315,9 @@ operator<(const libcamera::ControlValue &lhs, const libcamera::ControlValue &rhs
     CASE_LESS(Unsigned32)
     CASE_LESS(Point)
 #endif
+    // Prevent "enumeration value ‘...’ not handled in switch"
+    default:
+      break;
   }
 
   throw should_not_reach();
@@ -338,6 +344,9 @@ operator>(const libcamera::ControlValue &lhs, const libcamera::ControlValue &rhs
     CASE_GREATER(Unsigned32)
     CASE_GREATER(Point)
 #endif
+    // Prevent "enumeration value ‘...’ not handled in switch"
+    default:
+      break;
   }
 
   throw should_not_reach();

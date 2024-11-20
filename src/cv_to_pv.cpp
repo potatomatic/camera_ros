@@ -129,6 +129,9 @@ cv_to_pv(const libcamera::ControlValue &value)
     CASE_CONVERT(Unsigned32)
     CASE_CONVERT(Point)
 #endif
+    // Prevent "enumeration value ‘...’ not handled in switch"
+    default:
+      break;
   }
 
   return {};
@@ -163,6 +166,9 @@ cv_to_pv_type(const libcamera::ControlId *const id)
     case libcamera::ControlType::ControlTypePoint:
       return rclcpp::ParameterType::PARAMETER_INTEGER_ARRAY;
 #endif
+    // Prevent "enumeration value ‘...’ not handled in switch"
+    default:
+      break;
     }
   }
   else {
@@ -191,6 +197,9 @@ cv_to_pv_type(const libcamera::ControlId *const id)
     case libcamera::ControlType::ControlTypePoint:
       throw unsupported_control(id);
 #endif
+    // Prevent "enumeration value ‘...’ not handled in switch"
+    default:
+      break;
     }
   }
 
