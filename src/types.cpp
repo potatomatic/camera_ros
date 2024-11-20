@@ -19,6 +19,9 @@ std::to_string(const libcamera::ControlType id)
     CASE_TYPE(String)
     CASE_TYPE(Rectangle)
     CASE_TYPE(Size)
+    // Prevent "enumeration value ‘...’ not handled in switch"
+    default:
+      break;
   }
 
   return {};

@@ -135,6 +135,9 @@ clamp(const libcamera::ControlValue &value, const libcamera::ControlValue &min,
     CASE_CLAMP(String)
     CASE_CLAMP(Rectangle)
     CASE_CLAMP(Size)
+    // Prevent "enumeration value ‘...’ not handled in switch"
+    default:
+      break;
   }
 
   return {};
@@ -261,6 +264,9 @@ operator<(const libcamera::ControlValue &lhs, const libcamera::ControlValue &rhs
     CASE_LESS(String)
     CASE_LESS(Rectangle)
     CASE_LESS(Size)
+    // Prevent "enumeration value ‘...’ not handled in switch"
+    default:
+      break;
   }
 
   throw std::runtime_error("unhandled control type " + std::to_string(lhs.type()));
@@ -282,6 +288,9 @@ operator>(const libcamera::ControlValue &lhs, const libcamera::ControlValue &rhs
     CASE_GREATER(String)
     CASE_GREATER(Rectangle)
     CASE_GREATER(Size)
+    // Prevent "enumeration value ‘...’ not handled in switch"
+    default:
+      break;
   }
 
   throw std::runtime_error("unhandled control type " + std::to_string(lhs.type()));
