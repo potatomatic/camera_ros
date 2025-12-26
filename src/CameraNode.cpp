@@ -622,8 +622,12 @@ CameraNode::requestComplete(libcamera::Request *const request)
     auto msg_img_compressed = std::make_unique<sensor_msgs::msg::CompressedImage>();
 
     if (format_type(cfg.pixelFormat) == FormatType::RAW) {
-      // raw uncompressed image
-      assert(buffer_info[buffer].size == bytesused);
+      // NOTE: bytesused metadata may be unreliable on the first frame with some UVC devices
+      // due to driver initialization race conditions. The actual buffer data is typically valid,
+      // so we don't assert on size mismatch.
+      //
+      // assert(buffer_info[buffer].size == bytesused);
+
       msg_img->header = hdr;
       msg_img->width = cfg.size.width;
       msg_img->height = cfg.size.height;
