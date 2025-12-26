@@ -1,3 +1,5 @@
+#include "exceptions.hpp"
+#include "libcamera_version_utils.hpp"
 #include "types.hpp"
 #include <algorithm>
 #include <cassert>
@@ -66,6 +68,12 @@ MIN(Float)
 MAX(Integer32)
 MAX(Integer64)
 MAX(Float)
+#if LIBCAMERA_VER_GE(0, 4, 0)
+MIN(Unsigned16)
+MIN(Unsigned32)
+MAX(Unsigned16)
+MAX(Unsigned32)
+#endif
 
 namespace std
 {
@@ -79,6 +87,17 @@ clamp(const CTRectangle &val, const CTRectangle &lo, const CTRectangle &hi)
 
   return CTRectangle {x, y, width, height};
 }
+
+#if LIBCAMERA_VER_GE(0, 4, 0)
+CTPoint
+clamp(const CTPoint &val, const CTPoint &lo, const CTPoint &hi)
+{
+  const int x = std::clamp(val.x, lo.x, hi.x);
+  const int y = std::clamp(val.y, lo.y, hi.y);
+
+  return CTPoint {x, y};
+}
+#endif
 } // namespace std
 
 
@@ -87,14 +106,30 @@ libcamera::ControlValue
 clamp_array(const libcamera::ControlValue &value, const libcamera::ControlValue &min,
             const libcamera::ControlValue &max)
 {
+  assert(min.isArray() == max.isArray());
+  assert(min.numElements() == max.numElements());
+
   const libcamera::Span<const T> v = value.get<libcamera::Span<const T>>();
-  const libcamera::Span<const T> a = min.get<libcamera::Span<const T>>();
-  const libcamera::Span<const T> b = max.get<libcamera::Span<const T>>();
 
   std::vector<T> vclamp(v.size());
 
-  for (size_t i = 0; i < v.size(); i++)
-    vclamp[i] = std::clamp(v[i], a[i], b[i]);
+  if (min.isArray() == true && max.isArray() == true) {
+    // clamp individual elements with their individual min/max values
+    const libcamera::Span<const T> a = min.get<libcamera::Span<const T>>();
+    const libcamera::Span<const T> b = max.get<libcamera::Span<const T>>();
+    for (size_t i = 0; i < v.size(); i++)
+      vclamp[i] = std::clamp(v[i], a[i], b[i]);
+  }
+  else if (min.isArray() == false && max.isArray() == false) {
+    // clamp array elements via scalar min/max value
+    const T a = min.get<const T>();
+    const T b = max.get<const T>();
+    for (size_t i = 0; i < v.size(); i++)
+      vclamp[i] = std::clamp(v[i], a, b);
+  }
+  else {
+    throw should_not_reach();
+  }
 
   return libcamera::ControlValue(libcamera::Span<const T>(vclamp));
 }
@@ -121,8 +156,8 @@ libcamera::ControlValue
 clamp(const libcamera::ControlValue &value, const libcamera::ControlValue &min,
       const libcamera::ControlValue &max)
 {
-  if (min.type() != max.type())
-    throw std::runtime_error("minimum (" + std::to_string(min.type()) + ") and maximum (" +
+  if (min.type() != max.type() || min.isArray() != max.isArray() || min.numElements() != max.numElements())
+    throw invalid_conversion("minimum (" + std::to_string(min.type()) + ") and maximum (" +
                              std::to_string(max.type()) + ") types mismatch");
 
   switch (value.type()) {
@@ -135,9 +170,11 @@ clamp(const libcamera::ControlValue &value, const libcamera::ControlValue &min,
     CASE_CLAMP(String)
     CASE_CLAMP(Rectangle)
     CASE_CLAMP(Size)
-    // Prevent "enumeration value ‘...’ not handled in switch"
-    default:
-      break;
+#if LIBCAMERA_VER_GE(0, 4, 0)
+    CASE_CLAMP(Unsigned16)
+    CASE_CLAMP(Unsigned32)
+    CASE_CLAMP(Point)
+#endif
   }
 
   return {};
@@ -159,6 +196,28 @@ operator>(const libcamera::Rectangle &lhs, const libcamera::Rectangle &rhs)
   return lhs.x < rhs.x && lhs.y < rhs.y && (lhs.x + lhs.width) > (rhs.x + rhs.width) &&
          (lhs.y + lhs.height) > (rhs.y + rhs.height);
 }
+
+#if LIBCAMERA_VER_GE(0, 4, 0)
+int
+squared_sum(const libcamera::Point &p)
+{
+  return p.x * p.x + p.y * p.y;
+}
+
+bool
+operator<(const libcamera::Point &lhs, const libcamera::Point &rhs)
+{
+  // check if lhs point is closer to origin than rhs point
+  return squared_sum(lhs) < squared_sum(rhs);
+}
+
+bool
+operator>(const libcamera::Point &lhs, const libcamera::Point &rhs)
+{
+  // check if lhs point is further away from origin than rhs point
+  return squared_sum(lhs) > squared_sum(rhs);
+}
+#endif
 
 template<typename T>
 bool
@@ -264,12 +323,14 @@ operator<(const libcamera::ControlValue &lhs, const libcamera::ControlValue &rhs
     CASE_LESS(String)
     CASE_LESS(Rectangle)
     CASE_LESS(Size)
-    // Prevent "enumeration value ‘...’ not handled in switch"
-    default:
-      break;
+#if LIBCAMERA_VER_GE(0, 4, 0)
+    CASE_LESS(Unsigned16)
+    CASE_LESS(Unsigned32)
+    CASE_LESS(Point)
+#endif
   }
 
-  throw std::runtime_error("unhandled control type " + std::to_string(lhs.type()));
+  throw should_not_reach();
 }
 
 bool
@@ -288,10 +349,12 @@ operator>(const libcamera::ControlValue &lhs, const libcamera::ControlValue &rhs
     CASE_GREATER(String)
     CASE_GREATER(Rectangle)
     CASE_GREATER(Size)
-    // Prevent "enumeration value ‘...’ not handled in switch"
-    default:
-      break;
+#if LIBCAMERA_VER_GE(0, 4, 0)
+    CASE_GREATER(Unsigned16)
+    CASE_GREATER(Unsigned32)
+    CASE_GREATER(Point)
+#endif
   }
 
-  throw std::runtime_error("unhandled control type " + std::to_string(lhs.type()));
+  throw should_not_reach();
 }
