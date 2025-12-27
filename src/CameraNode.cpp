@@ -114,6 +114,9 @@ private:
   // compression quality parameter
   std::atomic_uint8_t jpeg_quality;
 
+  // flag to indicate camera is running (prevents queueRequest during shutdown)
+  std::atomic_bool running {false};
+
   void
   requestComplete(libcamera::Request *const request);
 
@@ -562,6 +565,8 @@ CameraNode::CameraNode(const rclcpp::NodeOptions &options)
   if (camera->start(&parameter_handler.get_control_values()))
     throw std::runtime_error("failed to start camera");
 
+  running = true;
+
   // queue all requests
   for (std::unique_ptr<libcamera::Request> &request : requests)
     camera->queueRequest(request.get());
@@ -569,6 +574,9 @@ CameraNode::CameraNode(const rclcpp::NodeOptions &options)
 
 CameraNode::~CameraNode()
 {
+  // stop queueing new requests
+  running = false;
+
   // stop camera
   if (camera->stop())
     std::cerr << "failed to stop camera" << std::endl;
@@ -676,13 +684,15 @@ CameraNode::requestComplete(libcamera::Request *const request)
     parameter_handler.redeclare();
 
     // queue the request again for the next frame and update controls
-    request->reuse(libcamera::Request::ReuseBuffers);
-    parameter_handler.move_control_values(request->controls());
-    camera->queueRequest(request);
+    if (running) {
+      request->reuse(libcamera::Request::ReuseBuffers);
+      parameter_handler.move_control_values(request->controls());
+      camera->queueRequest(request);
 
-    for (const auto &[id, value] : request->controls()) {
-      const std::string &name = libcamera::controls::controls.at(id)->name();
-      RCLCPP_DEBUG_STREAM(get_logger(), "applied control '" << name << "': " << (value.isNone() ? "NONE" : value.toString()));
+      for (const auto &[id, value] : request->controls()) {
+        const std::string &name = libcamera::controls::controls.at(id)->name();
+        RCLCPP_DEBUG_STREAM(get_logger(), "applied control '" << name << "': " << (value.isNone() ? "NONE" : value.toString()));
+      }
     }
   }
   else if (request->status() == libcamera::Request::RequestCancelled) {
